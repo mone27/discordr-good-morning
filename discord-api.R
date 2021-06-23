@@ -2,15 +2,20 @@ library(httr)
 library(jsonlite)
 library(magrittr)
 
+token_api <- NA
+
+setup_api <- function(token){
+  token_api <<- token
+  header <<- add_headers(Authorization = paste("Bot", token_api),
+                        "User-Agent" = "R-Discord-bot/0.1",
+                        "Accept" = "application/json")
+}
+
 base <- "https://discord.com/api"
 
 paste_url <- function(...){
   paste(..., sep="/")
 }
-
-header <- add_headers(Authorization = paste("Bot", token),
-                      "User-Agent" = "R-Discord-bot/0.1",
-                      "Accept" = "application/json")
 
 send_message <- function(message, channel_id){
   path <- paste_url("channels", channel_id, "messages")
@@ -19,7 +24,6 @@ send_message <- function(message, channel_id){
 }
 
 discord_post_api <- function(path, body){
-  browser()
   url <- paste_url(base, path)
   res <- POST(
     url = url,

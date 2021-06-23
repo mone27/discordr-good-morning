@@ -1,7 +1,6 @@
 library(websocket)
 library(httr)
 library(jsonlite)
-library(magrittr)
 library(later)
 
 ### --- globals
@@ -68,10 +67,11 @@ removeHandler("basic.stdout")
 ### ---
 
 get_ws_endpoint <- function(){
+  # TODO think of using here a function to make api calls
   get_bot_url <- "https://discord.com/api/gateway"
   res <- GET(url = get_bot_url)
-  content(res, "parsed")$url %>% 
-    modify_url(query=list(encoding = "json", v=9))
+  url <- content(res, "parsed")$url
+  return(modify_url(url, query=list(encoding = "json", v=9)))
 }
 
 

@@ -22,7 +22,10 @@ register_event_handler("MESSAGE_CREATE", function(msg){
   send_message(message, msg$channel_id)
 })
 
-morning_time <- "8:00:00"
+### -- goodmornig messages
+
+morning_time <- "8:00"
+timezone <- "CET"
 
 send_goodmorning <- function(){
   message <- "Gooood morning! it is time to start a new amazing day :sunrise:"
@@ -35,11 +38,19 @@ send_goodmorning <- function(){
 }
 
 schedule_good_morning <- function(){
-  notific_time <- today() + days(1) + hms(morning_time)
+  notific_time <- (today(timezone) + hm(morning_time)) %>% 
+    force_tz(timezone)
+  
+  if (notific_time < now()) { # time already passed for today, move to tomorrow
+    notific_time <- notific_time + days(1)
+  }
+  
   delay <-  (notific_time - now()) %>% 
     as.duration() %>% 
     as.numeric() # need to convert difftime into seconds
+  
   # schedule the good morning using later
+  cat("scheduling good morning in", delay, "seconds")
   later(send_goodmorning, delay)
 }
 

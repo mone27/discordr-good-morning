@@ -6,9 +6,9 @@ library(magrittr)
 
 source(here::here("secrets.R")) # loads token
 
+bot <- DiscordBot$new(token)
 
-
-register_event_handler("MESSAGE_CREATE", function(msg){
+bot$register_event_handler("MESSAGE_CREATE", function(msg){
   # avoid handling your own messages
   if (msg$author$id == "853907904872841236"){
     return()
@@ -59,4 +59,7 @@ setup_api(token)
 # init the good morning 
 schedule_good_morning()
 
-start_bot(token)
+enable_console_logging(level=10)
+
+
+bot$start()

@@ -2,79 +2,11 @@ library(websocket)
 library(httr)
 library(jsonlite)
 library(later)
+library(R6)
+library(bitops)
 
-### --- globals
-
-event_handlers <- list()
-op_handlers <- list()
-token_ws <- NA
-saved_ready <- NA
-ws <- NA
-first_connection <- T # needed to know if send identify or resume on hello
-# need to keep track of last seq number sent by discord
-last_s <- "Null"
-
-### --- external interface
-
-# think about moving it to a R6 object?
-
-# register event handler
-register_event_handler <- function(event_type, callback){
-  stopifnot(is.function(callback))
-  event_handlers[[event_type]] <<- callback
-}
-
-# register OP handler
-register_op_handler <- function(op, callback){
-  stopifnot(is.function(callback))
-  stopifnot(is.numeric(op)) # OP Codes must be integers
-  op_handlers[[as.character(op)]] <<- callback
-}
-
-
-start_bot <- function(token){
-  token_ws <<- token
-  connect_ws()
-}
-
-
-connect_ws <- function(){
-  
-  # initialize websocket
-  ws_endpoint <- get_ws_endpoint()
-  
-  ws <<- WebSocket$new(ws_endpoint, autoConnect = FALSE)
-  
-  ws$onMessage(function(event) {
-    receiver_switcher(event$data)
-  })
-  ws$onClose(on_ws_close)
-  
-  ws$onError(function(event) {
-    cat("Client failed to connect: ", event$message, "\n")
-  })
-  
-  #connect to websocket to start bot
-  ws$connect()
-}
-### --- setup logger
-
-library(logging)
-basicConfig()
-addHandler(writeToFile, file="discord_websocket.logs")
-removeHandler("basic.stdout")
-
-### ---
-
-get_ws_endpoint <- function(){
-  # TODO think of using here a function to make api calls
-  get_bot_url <- "https://discord.com/api/gateway"
-  res <- GET(url = get_bot_url)
-  url <- content(res, "parsed")$url
-  return(modify_url(url, query=list(encoding = "json", v=9)))
-}
-
-
+source("discord-api.R")
+source("logging.R")
 
 ### --- code to handle Discord websocket events
 
@@ -91,153 +23,254 @@ OP_HELLO <- 10 #first message received
 OP_HEARTBEAT_ACK <- 11 # acknowledge heartbeat
 
 
-
-### -- websocket setup for Discord
-
-send_payload <- function(opcode, data){
-  payload <- toJSON(list(op=opcode, d=data), auto_unbox = T)
-  loginfo("Sending message")
-  loginfo(payload)
-  ws$send(payload)
-}
-
-
-receiver_switcher <- function(msg){
-  # parse message
-  msg <- fromJSON(msg)
-  
-  loginfo("Received message")
-  loginfo(msg)
-  
-  update_seq(msg)
-  
-  # switching for op
-  op <- as.character(msg$op)
-  if (op %in% names(op_handlers)){
-    op_handlers[[op]](msg)
-  }
-  else {
-    warning("Unhandled OPCODE")
-    print(msg)
-  }
-}
-
-update_seq <- function(msg){
-  # need to update the last s for the heartbeat and resume
-  # may need to find a better place for this
-  if (!is.null(msg$s)) { # seems that during ACK s in null avoid saving it
-    last_s <<- msg$s
-  }
-}
+# Discord gateway intents for more info https://discord.com/developers/docs/topics/gateway#gateway-intents
+# to use more than one intent you need to sum them
+GUILDS <- 1 %<<% 0
+GUILD_MEMBERS <- 1 %<<% 1  
+GUILD_BANS <- 1 %<<% 2
+GUILD_EMOJIS <- 1 %<<% 3
+GUILD_INTEGRATIONS <- 1 %<<% 4
+GUILD_WEBHOOKS <- 1 %<<% 5
+GUILD_INVITES <- 1 %<<% 6
+GUILD_VOICE_STATES <- 1 %<<% 7
+GUILD_PRESENCES <- 1 %<<% 8
+GUILD_MESSAGES <- 1 %<<% 9
+GUILD_MESSAGE_REACTIONS <- 1 %<<% 10
+GUILD_MESSAGE_TYPING <- 1 %<<% 11
+DIRECT_MESSAGES <- 1 %<<% 12
+DIRECT_MESSAGE_REACTIONS <- 1 %<<% 13
+DIRECT_MESSAGE_TYPING <- 1 %<<% 14
 
 
-# hello is the first message sent by discord on the websocket
-# need to setup heartbeat and intent
-handle_hello <- function(hello_msg){
-  print("handling hello")
-  # first thing to do is sending an heartbeat
-  interval <- hello_msg$d$heartbeat_interval/1000
-  # closure to capture interval
-  send_heartbeat <- function(){
-    #print("sending heartbeat")
-    send_payload(OP_HB, data=last_s)
-    # set up function to send next heartbeat to keep connection open
-    later(send_heartbeat, interval)
-  }
-  
-  # send first heartbeat
-  send_heartbeat()
-  
-  # send the intent to start receiving events
-  if (first_connection){
-    send_identify()
-  }
-  else {
-    send_resume()
-  }
-}
-# first connection
-register_op_handler(OP_HELLO, handle_hello)
+### ---
 
-# Heartbeat ACK, for now ignoring it
-register_op_handler(OP_HEARTBEAT_ACK, function(msg){})
+DiscordBot <- R6Class("DiscordBot",
+      public = list(
+        #' Create a new bot
+        #' the bot won't be started yet, but it is possible to register event handlers
+        #' The users should ensure that the bot has the right permissions
+        #' 
+        #' @param token The discord bot token
+        #' @param intent the intent(s) that the bot should access.
+        #' Discordr defines constant for the possible intents 
+        initialize = function(token, intent = GUILD_MESSAGES) {
+          private$token = token
+          private$intent = intent
+          ### registers default handlers for event
+          
+          # first connection
+          self$register_op_handler(OP_HELLO, private$handle_hello)
+          
+          
+          # Heartbeat ACK, for now ignoring it
+          self$register_op_handler(OP_HEARTBEAT_ACK, function(msg){})
+          
+          # respond with heartbeat if requested. Should be used rarely
+          self$register_op_handler(OP_HB, private$send_heartbeat)
+          
+          # reestablish connection if case the websocket closes
+          self$register_op_handler(OP_RECONNECT, private$handle_reconnect_request)
+          self$register_op_handler(OP_INVALID_SESSION, private$handle_invalid_session)
+          
+          # Ignoring the signal that the resume is complete
+          self$register_op_handler(OP_RESUME, function(msg){})
+          
+          # Handler of all normal events
+          self$register_op_handler(OP_DISPATCH, private$event_switcher)
+          
+          self$register_event_handler("READY", private$handle_ready)
+          
+          invisible(self)
+        },
+        
+        #' starts the bot and enters in an infinite later loop
+        #' if in a interactive session returns as the later event loop will be run while R is idle
+        start = function(){
+          private$connect_ws()
+          print("Started bot")
+          # in interactive session returns control
+          if (interactive()){return(invisible(private))}
+          while(TRUE){
+            # won't return until a later callback is executed
+            run_now(timeoutSecs = Inf)
+          }
+        },
+        
+        #' register op handler
+        register_op_handler = function(op, callback){
+          stopifnot(is.function(callback))
+          stopifnot(is.numeric(op)) # OP Codes must be integers
+          private$op_handlers[[as.character(op)]] <- callback
+          invisible(self)
+        },
+        #' register event handlers
+        register_event_handler = function(event_type, callback){
+          stopifnot(is.function(callback))
+          private$event_handlers[[event_type]] <- callback
+          invisible(self)
+        },
+        
+        #' send payload directly to the websocket
+        send_payload = function(opcode, data){
+          payload <- toJSON(list(op=opcode, d=data), auto_unbox = T)
+          logdebug("Sending payload on websocket")
+          logdebug(payload)
+          private$ws$send(payload)
+        }
+      ),
+    private = list(
+      token = NULL,
+      op_handlers = list(),
+      event_handlers = list(),
+      saved_ready = NULL, # individually fields should be saved here
+      ws = NULL,
+      first_connection = TRUE, # needed to know if send identify or resume on hello
+      last_s = "Null", # keep track of last seq number sent by discord
+      intent = NULL,
+      
+      #' create a new websocket and connect to it
+      connect_ws = function(){
+        # this makes an API call to the discord server, should be cached
+        ws_endpoint <- get_ws_endpoint()
+        # initialize websocket
+        private$ws <- WebSocket$new(ws_endpoint, autoConnect = FALSE)
+        private$ws$onMessage(function(event) {
+          private$receiver_switcher(event$data)
+        })
+        private$ws$onClose(private$handle_ws_close)
+        private$ws$onError(function(event) {
+          logwarn("Client failed to connect: ", event$message, "\n")
+          # error dugint connection to trying again to connect
+          private$connect_ws()
+        })
+        #connect to websocket to start bot
+        private$ws$connect()
+      },
+      
+      handle_ws_close = function(event){
+        logwarn("Client disconnected with code ", event$code,
+                " and reason ", event$reason, "\n", sep = "")
+        # trying to reconnect which then will send a resume request
+        private$connect_ws() # this creates a new websocket a reconnects
+      },
+      
+      update_seq = function(msg){
+        # need to update the last s for the heartbeat and resume
+        # may need to find a better place for this
+        if (!is.null(msg$s)) { # seems that during ACK s in null, so avoid saving it
+          private$last_s <- msg$s
+        }
+      },
+      
+      #' switcher for op code
+      receiver_switcher = function(msg){
+        # parse message
+        msg <- fromJSON(msg)
+        
+        logdebug("Received message")
+        logdebug(msg)
+        
+        private$update_seq(msg)
+        
+        # switching for op
+        op <- as.character(msg$op)
+        if (op %in% names(private$op_handlers)){
+          private$op_handlers[[op]](msg)
+        }
+        else {
+          logwarn("Unhandled OPCODE")
+          logwarn(msg)
+        }
+      },
+      
+      #' Switch according to received events
+      event_switcher = function(event){
+        
+        event_name <- event$t
+        
+        if (event_name %in% names(private$event_handlers)){
+          private$event_handlers[[event_name]](event$d)
+        }
+      },
+      
+      #' hello is the first message sent by discord on the websocket
+      #' need to setup heartbeat and intent
+      handle_hello = function(hello_msg){
+        logdebug("handling hello")
+        # first thing to do is sending an heartbeat
+        interval <- hello_msg$d$heartbeat_interval/1000 # milliseconds to seconds
+        # closure to capture interval
+        send_heartbeat <- function(){
+          self$send_payload(OP_HB, data=private$last_s)
+          # set up function to send next heartbeat to keep connection open
+          later(send_heartbeat, interval)
+        }
+        
+        # send first heartbeat and schedule them in background
+        send_heartbeat()
+        
+        # send the intent to start receiving events
+        if (private$first_connection){
+          logdebug("first connection: so identify")
+          private$send_identify()
+        }
+        else {
+          private$send_resume()
+        }
+      },
+      
+      send_heartbeat = function(msg){
+        self$send_payload(OP_HB, data=private$last_s)
+      },
+      
+      #' connect to discord sending intents and 
+      send_identify = function() {
+        logdebug("sending indentify")
+        logdebug(private$intent)
+        data <- list(
+          token = private$token,
+          properties = list(
+            `$os` = Sys.info()["sysname"],
+            `$browser` = "R",
+            `$device` = "R"
+          ),
+          intents = private$intent
+        )
+        self$send_payload(OP_IDENTIFY, data)
+        private$first_connection <- F
+      },
+      
+      #' The session is invalid for discord
+      #' need to reconnect again
+      handle_invalid_session = function(msg){
+        lodebug("Handling invalid session")
+        private$first_connection <- T # reset connection
+        private$send_identify()
+      },
+      
+      #' resumes previous sessions after they are interrupted
+      send_resume = function(){
+        loginfo("Resuming connection")
+        resume <- list(token=private$token,
+                       session_id=private$saved_ready$session_id,
+                       seq = private$last_s)
+        self$send_payload(OP_RESUME, resume)
+      },
+      
+      #' reconnect socket if asked by discord
+      handle_reconnect_request = function(msg){
+        loddebug("Handling reconnect request")
+        # close and then reopen the websocket
+        private$ws$close()
+      },
+      
+    
+      #' save the ready event 
+      handle_ready = function(ready_event){
+        private$saved_ready <- ready_event
+      }
+      
+    
+    )
+)
 
-
-send_heartbeat <- function(msg){
-  send_payload(OP_HB, data=last_s)
-}
-# respond with heartbeat if requested. Shoul be used rarerly
-register_op_handler(OP_HB, send_heartbeat)
-
-
-send_identify <- function() {
-  print("sending intent")
-  intent_num <- 512 # This is 1 << 9 or GUILD_MESSAGES
-  data <- list(
-    token = token_ws,
-    properties = list(
-      `$os` = "linux",
-      `$browser` = "R",
-      `$device` = "R"
-    ),
-    intents = intent_num
-  )
-  send_payload(OP_IDENTIFY, data)
-  first_connection <<- F
-}
-
-
-handle_invalid_session <- function(msg){
-  first_connection <<- T # reset connection
-  send_identify()
-}
-
-register_op_handler(OP_INVALID_SESSION, handle_invalid_session)
-
-send_resume <- function(){
-  loginfo("Resuming connection")
-  resume <- list(token=token_ws,
-                 session_id=saved_ready$session_id,
-                 seq = last_s)
-  send_payload(OP_RESUME, resume)
-}
-
-on_ws_close <- function(event){
-  logwarn("Client disconnected with code ", event$code,
-      " and reason ", event$reason, "\n", sep = "")
-  # trying to reconnect which then will send a resume request
-  connect_ws() # this creates a new websocket a reconnects
-}
-
-handle_reconnect_request <- function(msg){
-  # close and then reopen the websocket
-  ws$close()
-}
-
-
-register_op_handler(OP_RECONNECT, handle_reconnect_request)
-
-# Ignoring the signal that the resume is complete
-register_op_handler(OP_RESUME, function(msg){})
-
-
-### --- event management
-
-event_switcher <- function(event){
-
-  event_name <- event$t
-  
-  if (event_name %in% names(event_handlers)){
-    event_handlers[[event_name]](event$d)
-  }
-}
-
-# normal events
-register_op_handler(OP_DISPATCH, event_switcher)
-
-# by default handle only ready event 
-handle_ready <- function(ready_event){
-  saved_ready <<- ready_event
-}
-
-register_event_handler("READY", handle_ready)

@@ -1,12 +1,11 @@
-source("websocket.R")
-source("discord-api.R")
+library(discordr)
+library(magrittr)
 library(lubridate)
 library(later)
-library(magrittr)
 
 source(here::here("secrets.R")) # loads token
 
-bot <- DiscordBot$new(token)
+bot <- DiscordrBot$new(token)
 
 bot$register_event_handler("MESSAGE_CREATE", function(msg){
   # avoid handling your own messages
@@ -19,7 +18,7 @@ bot$register_event_handler("MESSAGE_CREATE", function(msg){
   }
   message <- paste("Hi,", msg$author$username, "this is a reply to your message: '", 
                    msg$content, "' (from your R discord bot :nerd:)")
-  send_message(message, msg$channel_id)
+  bot$send_message(message, msg$channel_id)
 })
 
 ### -- goodmornig messages
@@ -29,7 +28,7 @@ timezone <- "CET"
 
 send_goodmorning <- function(){
   message <- "Gooood morning! it is time to start a new amazing day :sunrise:"
-  send_message(
+  bot$send_message(
     message,
     "853684583131643934" # study tree channel
   )
@@ -54,7 +53,6 @@ schedule_good_morning <- function(){
   later(send_goodmorning, delay)
 }
 
-setup_api(token)
 
 # init the good morning 
 schedule_good_morning()

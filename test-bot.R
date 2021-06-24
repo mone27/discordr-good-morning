@@ -2,6 +2,7 @@ source("websocket.R")
 source("discord-api.R")
 library(lubridate)
 library(later)
+library(magrittr)
 
 source(here::here("secrets.R")) # loads token
 
@@ -43,8 +44,8 @@ schedule_good_morning <- function(){
 }
 
 setup_api(token)
-start_bot(token)
 
 # init the good morning 
 schedule_good_morning()
 
+start_bot(token)

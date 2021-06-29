@@ -23,7 +23,7 @@ bot$register_event_handler("MESSAGE_CREATE", function(msg){
   }
   message <- paste("Hi,", msg$author$username, "this is a reply to your message: '", 
                    msg$content, "' (from your R discord bot :nerd:)")
-  bot$send_message(message, msg$channel_id)
+  send_message(message, msg$channel_id, bot)
 })
 
 ### -- goodmornig messages
@@ -66,8 +66,7 @@ schedule_good_morning <- function(){
 schedule_good_morning()
 
 enable_console_logging(level=10)
-
-
+enable_file_logging(level=10)
 
 bot$start()
 

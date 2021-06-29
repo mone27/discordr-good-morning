@@ -7,6 +7,7 @@ library(jsonlite)
 source(here::here("secrets.R")) # loads token
 
 TEST_CHANNEL_ID = "853900827197177876"
+STUDY_CH_ID = "853684583131643934"
 
 
 bot <- DiscordrBot$new(token)
@@ -31,11 +32,14 @@ morning_time <- "8:00"
 timezone <- "CET"
 
 send_goodmorning <- function(){
-  message <- "Gooood morning! it is time to start a new amazing day :sunrise:"
-  bot$send_message(
-    message,
-    "853684583131643934" # study tree channel
-  )
+  embed <- new_embed(
+    title = "Good morning",
+    description = "Gooood morning! it is time to start a new amazing day :sunrise:",
+    image = list(
+      url = "https://media1.tenor.com/images/008b1200ac40752b67f93fb541f33dab/tenor.gif?itemid=5082920"
+    ))
+  send_embed(embed, STUDY_CH_ID, bot)
+  
   # reschedule for next day
   schedule_good_morning()
 }
@@ -64,59 +68,6 @@ schedule_good_morning()
 enable_console_logging(level=10)
 
 
-
-test_embed <- function(){
-  embed = new_embed(
-    title = "This is an embed",
-    video = list(
-      url = "https://media.tenor.co/videos/65e2b255e20976f17b8759c512742e49/mp4"
-    )
-  )
-  
-  send_embed(embed, TEST_CHANNEL_ID, bot)
-}
-
-send_embed <-  function(bot, embed, channel_id){
-  path <- paste_url("channels", channel_id, "messages")
-  body <- I(
-    list(content=unbox("test"), embeds = list(list(title=unbox("This is a test")), list(title=unbox("This is a second test"))
-         )))
-  bot$discord_post_api(path, body)
-}
-
-body <- list(embeds = I(list(
-  list(
-    title = unbox("This is a test")
-  )
-)))
-
-toJSON(body)
-
-embed = new_embed(
-  title = "This is an embed",
-  image = list(
-    url = "https://media.tenor.co/videos/65e2b255e20976f17b8759c512742e49/mp4"
-  ))
-
-send_embed(embed, TEST_CHANNEL_ID, bot)
-
-tree <- new_embed(
-  title = "A tree",
-  image = list(
-    url = "https://upload.wikimedia.org/wikipedia/commons/e/eb/Ash_Tree_-_geograph.org.uk_-_590710.jpg"
-  )
-)
-
-send_embed(tree, TEST_CHANNEL_ID, bot)
-
-gif <- new_embed(
-  title = "A GIF",
-  image = list(
-    url = "https://media1.tenor.com/images/d686f241dde8606fd7aeb6cf218bac99/tenor.gif?itemid=18394697"
-  )
-)
-
-send_embed(gif, TEST_CHANNEL_ID, bot)
 
 bot$start()
 
